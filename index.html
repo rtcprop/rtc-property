@@ -1023,19 +1023,35 @@ function buildTxTable(sorted) {
   ["Fecha","Propiedad","Categoría","Descripción","Tipo","Monto",""].forEach(function(h){thead+='<th style="'+thSt()+'">'+h+'</th>';});
   thead += "</tr></thead>";
   var tbody = "";
-  sorted.forEach(function(t) {
-    var p   = DATA.propiedades.find(function(x){return x.id===t.propiedadId;});
-    var isG = p && p.ownership==="gestionada";
-    var rowBg = t.esComision ? "rgba(96,64,160,.04)" : "transparent";
-    tbody += '<tr class="hr" style="background:'+rowBg+'">';
+
+  // Filter: hide linked commission rows — they're shown inline under their parent
+  var parentIds = sorted.filter(function(t){return t.esComision && t.parentId;}).map(function(t){return t.parentId;});
+  var visible   = sorted.filter(function(t){return !t.parentId || !t.esComision;});
+
+  visible.forEach(function(t) {
+    var p    = DATA.propiedades.find(function(x){return x.id===t.propiedadId;});
+    var isG  = p && p.ownership==="gestionada";
+    // Find linked commission for this tx
+    var com  = DATA.transacciones.find(function(c){return c.parentId===t.id && c.esComision;});
+
+    tbody += '<tr class="hr" style="background:transparent">';
     tbody += '<td style="'+tdSt()+'color:#9A8E7A;white-space:nowrap;font-size:12px;">'+fmtD(t.fecha)+'</td>';
     tbody += '<td style="'+tdSt()+'font-size:12px;"><div style="font-weight:500;">'+esc(p&&p.nombre||"—")+'</div>'+(p?badge(isG?"🏢":"🏠",isG?"purple":"gold"):"")+'</td>';
     tbody += '<td style="'+tdSt()+'color:#9A8E7A;font-size:12px;">'+esc(t.categoria)+'</td>';
-    tbody += '<td style="'+tdSt()+'font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(t.descripcion||"—")+(t.esComision?'<span style="margin-left:5px;font-size:10px;color:#6040A0;background:#F0EAFA;padding:1px 5px;border-radius:4px;">Comisión</span>':"")+'</td>';
+    tbody += '<td style="'+tdSt()+'font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">';
+    tbody += esc(t.descripcion||"—");
+    // Show commission badge inline if this tx has a linked commission
+    if (com) {
+      tbody += ' <span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;color:#6040A0;background:#F0EAFA;padding:1px 6px;border-radius:4px;white-space:nowrap;">comisión '+fmtM(com.monto,com.moneda||"ARS")+'</span>';
+    }
+    tbody += '</td>';
     tbody += '<td style="'+tdSt()+'">'+badge(t.tipo==="ingreso"?"↑ Ingreso":"↓ Egreso",t.tipo==="ingreso"?"green":"red")+'</td>';
     tbody += '<td style="'+tdSt()+'font-size:13px;font-weight:600;color:'+(t.tipo==="ingreso"?"#2D7A4F":"#B84040")+';white-space:nowrap;text-align:right;">'+fmtM(t.monto,t.moneda||"ARS")+'</td>';
     tbody += '<td style="'+tdSt()+'"><div style="display:flex;gap:4px;">';
-    tbody += '<button onclick="openTxForm(\''+t.id+'\')" style="background:none;border:none;color:#9A8E7A;cursor:pointer;padding:3px;display:flex;">'+icon('<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>',11)+'</button>';
+    // Only show edit button for non-commission rows (commissions are auto-managed)
+    if (!t.esComision) {
+      tbody += '<button onclick="openTxForm(\''+t.id+'\')" style="background:none;border:none;color:#9A8E7A;cursor:pointer;padding:3px;display:flex;">'+icon('<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>',11)+'</button>';
+    }
     tbody += '<button onclick="delTx(\''+t.id+'\')" style="background:none;border:none;color:#B84040;cursor:pointer;padding:3px;display:flex;">'+icon('<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>',11)+'</button>';
     tbody += '</div></td></tr>';
   });
@@ -1056,52 +1072,158 @@ window.updateConv = function() {
   if (el) el.innerHTML = '<span style="font-family:\'Cormorant Garamond\',serif;font-size:22px;font-weight:600;color:#B8922A;">'+(res!==null?fmtM(res,to):"—")+'</span>';
 };
 
-window.openTxForm = function(id) {
-  var tx = id ? DATA.transacciones.find(function(x){return x.id===id;})
-              : {id:uid(),fecha:today(),tipo:"ingreso",propiedadId:"",categoria:"",monto:"",moneda:"ARS",descripcion:"",esComision:false,montoTotal:"",montoTransferido:""};
+window.openTxForm = function(id, draftOverride) {
+  var tx;
+  if (draftOverride) {
+    tx = draftOverride;
+  } else if (id) {
+    tx = DATA.transacciones.find(function(x){return x.id===id;});
+  } else {
+    tx = {id:uid(),fecha:today(),tipo:"ingreso",propiedadId:"",categoria:"",monto:"",moneda:"ARS",descripcion:"",montoComision:""};
+  }
   var propOpts = '<option value="">Sin asignar</option>' + DATA.propiedades.map(function(p){return '<option value="'+esc(p.id)+'"'+(tx.propiedadId===p.id?" selected":"")+'>'+esc(p.nombre)+(p.ownership==="gestionada"?" 🏢":"")+'</option>';}).join("");
   var catOpts  = (tx.tipo==="ingreso"?DATA.tiposIngreso:DATA.tiposGasto).map(function(c){return '<option'+(tx.categoria===c?" selected":"")+'>'+esc(c)+'</option>';}).join("");
   var prop     = DATA.propiedades.find(function(p){return p.id===tx.propiedadId;});
   var isG      = prop && prop.ownership==="gestionada";
-  var gestNote = isG ? '<div style="background:#F0EAFA;border:1px solid rgba(96,64,160,.2);border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#6040A0;"><strong>Propiedad gestionada</strong> · '+(prop.modoGestion==="cobrador"?"Cobrador":"Comisionista")+(prop.comisionPct?" · Comisión: "+prop.comisionPct+"%":"")+'</div>' : "";
-  var extraFields = "";
-  if (isG && prop.modoGestion==="cobrador" && tx.tipo==="ingreso") {
-    extraFields += fld("Total cobrado al inquilino", '<input id="tx-tot" type="number" style="'+IST+'" value="'+(tx.montoTotal||"")+'"/>');
-    extraFields += fld("A transferir al dueño",      '<input id="tx-trf" type="number" style="'+IST+'" value="'+(tx.montoTransferido||"")+'"/>');
+  var comPct   = isG && prop.comisionPct ? parseFloat(prop.comisionPct) : 0;
+  var comCalc  = (tx.monto && comPct) ? Math.round(parseFloat(tx.monto) * comPct / 100) : "";
+  var comVal   = (tx.montoComision !== undefined && tx.montoComision !== "") ? tx.montoComision : comCalc;
+
+  var gestBlock = "";
+  if (isG && tx.tipo==="ingreso") {
+    var prevTxt = comVal ? "Tu comisi\u00f3n: " + fmtM(comVal, tx.moneda||"ARS") + " \u2014 se sumar\u00e1 a tus ingresos" : "Ingres\u00e1 el monto para calcular autom\u00e1ticamente";
+    gestBlock  = '<div style="grid-column:span 2;background:#F0EAFA;border:1px solid rgba(96,64,160,.25);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;">';
+    gestBlock += '<div style="font-size:12px;color:#6040A0;font-weight:500;">&#127962; '+esc(prop.modoGestion==="cobrador"?"Cobrador":"Comisionista")+(comPct?' \u00b7 '+comPct+'% definido en la propiedad':'')+'</div>';
+    gestBlock += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">';
+    gestBlock += fld("Comisi\u00f3n (%)", '<input id="tx-compct" type="number" style="'+IST+'" value="'+esc(comPct||"")+'" oninput="recalcComision()" placeholder="Ej: 10"/>');
+    gestBlock += fld("Monto de mi comisi\u00f3n", '<input id="tx-comision" type="number" style="'+IST+'border-color:#9B72D0;background:#FDFAFF;" value="'+esc(comVal)+'" oninput="updateComPreview()" placeholder="Se calcula autom\u00e1tico"/>');
+    gestBlock += '</div>';
+    gestBlock += '<div id="tx-com-preview" style="font-size:12px;color:#6040A0;background:#fff;border-radius:6px;padding:8px 12px;">'+prevTxt+'</div>';
+    gestBlock += '</div>';
   }
-  var ecCheck = isG ? '<div style="grid-column:span 2;margin-top:4px;"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;"><input type="checkbox" id="tx-ec"'+(tx.esComision?" checked":"")+'/> ¿Este monto es nuestra comisión/honorario?</label></div>' : "";
-  var body = gestNote + g2(
-    fld("Fecha",     '<input id="tx-f"   type="date" style="'+IST+'" value="'+esc(tx.fecha)+'"\/>')
-    + fld("Tipo",    '<select id="tx-ti" style="'+IST+'" onchange="updateTxCats()"><option value="ingreso"'+(tx.tipo==="ingreso"?" selected":"")+'>↑ Ingreso</option><option value="egreso"'+(tx.tipo==="egreso"?" selected":"")+'>↓ Egreso</option></select>')
-    + fld("Propiedad",'<select id="tx-p"  style="'+IST+'" onchange="updateTxGest()">'+propOpts+'</select>')
-    + fld("Categoría",'<select id="tx-cat" style="'+IST+'">'+catOpts+'</select>')
-    + fld("Monto",   '<input id="tx-m"   type="number" style="'+IST+'" value="'+(tx.monto||"")+'"\/>') 
-    + fld("Moneda",  '<select id="tx-mo" style="'+IST+'"><option value="ARS"'+(tx.moneda==="ARS"?" selected":"")+'>$ ARS</option><option value="USD"'+(tx.moneda==="USD"?" selected":"")+'>USD</option><option value="BRL"'+(tx.moneda==="BRL"?" selected":"")+'>R$ BRL</option></select>')
-    + extraFields + ecCheck
-    + fld("Descripción", '<input id="tx-desc" style="'+IST+'" value="'+esc(tx.descripcion)+'" placeholder="Descripción opcional"/>', true)
+
+  var body = g2(
+    fld("Fecha",      '<input id="tx-f"   type="date" style="'+IST+'" value="'+esc(tx.fecha)+'"/>')
+    + fld("Tipo",     '<select id="tx-ti" style="'+IST+'" onchange="updateTxCats()"><option value="ingreso"'+(tx.tipo==="ingreso"?" selected":"")+'>&#8593; Ingreso</option><option value="egreso"'+(tx.tipo==="egreso"?" selected":"")+'>&#8595; Egreso</option></select>')
+    + fld("Propiedad",'<select id="tx-p"  style="'+IST+'" onchange="reloadTxForm()">'+propOpts+'</select>')
+    + fld("Categor\u00eda",'<select id="tx-cat" style="'+IST+'">'+catOpts+'</select>')
+    + fld("Monto del movimiento",'<input id="tx-m" type="number" style="'+IST+'" value="'+(tx.monto||"")+'" oninput="recalcComision()" placeholder="Monto del movimiento"/>')
+    + fld("Moneda",   '<select id="tx-mo" style="'+IST+'" onchange="recalcComision()"><option value="ARS"'+(tx.moneda==="ARS"?" selected":"")+'>$ ARS</option><option value="USD"'+(tx.moneda==="USD"?" selected":"")+'>USD</option><option value="BRL"'+(tx.moneda==="BRL"?" selected":"")+'>R$ BRL</option></select>')
+    + (gestBlock ? '<div style="grid-column:span 2;">'+gestBlock+'</div>' : "")
+    + fld("Descripci\u00f3n", '<input id="tx-desc" style="'+IST+'" value="'+esc(tx.descripcion)+'" placeholder="Descripci\u00f3n opcional"/>', true)
   );
+  window._currentTxId    = id || null;
+  window._currentTxDraft = tx;
   showModal(id?"Editar movimiento":"Nuevo movimiento", body + formActions("saveTx('"+tx.id+"')"), true);
 };
+
 window.updateTxCats = function() {
   var tipo = document.getElementById("tx-ti")&&document.getElementById("tx-ti").value||"ingreso";
   var cats = tipo==="ingreso"?DATA.tiposIngreso:DATA.tiposGasto;
   var el   = document.getElementById("tx-cat");
   if (el) el.innerHTML = cats.map(function(c){return '<option>'+esc(c)+'</option>';}).join("");
 };
-window.updateTxGest = function() {
-  // Re-open form with updated prop context
-  var txId = document.querySelector("[id^='tx-f']") ? null : null;
-  // simpler: just update the note area
+
+// Reload the form in-place when propiedad changes
+window.reloadTxForm = function() {
+  var pid    = document.getElementById("tx-p")&&document.getElementById("tx-p").value||"";
+  var monto  = document.getElementById("tx-m")&&document.getElementById("tx-m").value||"";
+  var moneda = document.getElementById("tx-mo")&&document.getElementById("tx-mo").value||"ARS";
+  var fecha  = document.getElementById("tx-f")&&document.getElementById("tx-f").value||today();
+  var tipo   = document.getElementById("tx-ti")&&document.getElementById("tx-ti").value||"ingreso";
+  var cat    = document.getElementById("tx-cat")&&document.getElementById("tx-cat").value||"";
+  var desc   = document.getElementById("tx-desc")&&document.getElementById("tx-desc").value||"";
+  var draft  = Object.assign({}, window._currentTxDraft||{}, {
+    propiedadId:pid, monto:monto, moneda:moneda,
+    fecha:fecha, tipo:tipo, categoria:cat, descripcion:desc, montoComision:""
+  });
+  window._currentTxDraft = draft;
+  openTxForm(window._currentTxId, draft);
 };
+
+// Live recalc when monto or % changes
+window.recalcComision = function() {
+  var monto  = parseFloat(document.getElementById("tx-m")&&document.getElementById("tx-m").value)||0;
+  var pct    = parseFloat(document.getElementById("tx-compct")&&document.getElementById("tx-compct").value)||0;
+  var moneda = document.getElementById("tx-mo")&&document.getElementById("tx-mo").value||"ARS";
+  var comEl  = document.getElementById("tx-comision");
+  var prevEl = document.getElementById("tx-com-preview");
+  if (!comEl) return;
+  if (monto && pct) {
+    var calc = Math.round(monto * pct / 100);
+    comEl.value = calc;
+    if (prevEl) prevEl.innerHTML = "Tu comisi\u00f3n: <strong>" + fmtM(calc, moneda) + "</strong> \u2014 se sumar\u00e1 a tus ingresos";
+  } else {
+    if (prevEl) prevEl.innerHTML = "Ingres\u00e1 el monto y el % para calcular";
+  }
+};
+
+window.updateComPreview = function() {
+  var comEl  = document.getElementById("tx-comision");
+  var prevEl = document.getElementById("tx-com-preview");
+  var moneda = document.getElementById("tx-mo")&&document.getElementById("tx-mo").value||"ARS";
+  if (!comEl || !prevEl) return;
+  var val = parseFloat(comEl.value)||0;
+  prevEl.innerHTML = val ? "Tu comisi\u00f3n: <strong>"+fmtM(val,moneda)+"</strong> \u2014 se sumar\u00e1 a tus ingresos" : "Sin comisi\u00f3n definida";
+};
+
 window.saveTx = async function(id) {
   var m = parseFloat(document.getElementById("tx-m")&&document.getElementById("tx-m").value);
   if (!m){alert("Ingresá un monto.");return;}
-  var ec = document.getElementById("tx-ec");
-  var f = {id:id, fecha:document.getElementById("tx-f").value, tipo:document.getElementById("tx-ti").value, propiedadId:document.getElementById("tx-p").value, categoria:document.getElementById("tx-cat").value, monto:m, moneda:document.getElementById("tx-mo").value, descripcion:document.getElementById("tx-desc").value, esComision:ec?ec.checked:false, montoTotal:parseFloat(document.getElementById("tx-tot")&&document.getElementById("tx-tot").value)||0, montoTransferido:parseFloat(document.getElementById("tx-trf")&&document.getElementById("tx-trf").value)||0};
-  var list = DATA.transacciones.some(function(x){return x.id===id;}) ? DATA.transacciones.map(function(x){return x.id===id?f:x;}) : DATA.transacciones.concat([f]);
-  await save(Object.assign({},DATA,{transacciones:list})); closeModal();
+  var fecha    = document.getElementById("tx-f").value;
+  var tipo     = document.getElementById("tx-ti").value;
+  var pid      = document.getElementById("tx-p").value;
+  var cat      = document.getElementById("tx-cat").value;
+  var moneda   = document.getElementById("tx-mo").value;
+  var desc     = document.getElementById("tx-desc").value;
+  var comEl    = document.getElementById("tx-comision");
+  var montoComision = comEl ? (parseFloat(comEl.value)||0) : 0;
+
+  // Main transaction (the full payment from the tenant)
+  var f = {id:id, fecha:fecha, tipo:tipo, propiedadId:pid,
+           categoria:cat, monto:m, moneda:moneda, descripcion:desc,
+           esComision:false, montoComision:montoComision};
+
+  var prop = DATA.propiedades.find(function(p){return p.id===pid;});
+  var isG  = prop && prop.ownership==="gestionada";
+  var list = DATA.transacciones.some(function(x){return x.id===id;})
+    ? DATA.transacciones.map(function(x){return x.id===id?f:x;})
+    : DATA.transacciones.concat([f]);
+
+  // If gestionada with commission AND it's an income → save/update a linked commission transaction
+  if (isG && tipo==="ingreso" && montoComision > 0) {
+    // Look for existing linked commission (has parentId === id)
+    var comId  = DATA.transacciones.find(function(t){return t.parentId===id;});
+    var comTx  = {
+      id:         comId ? comId.id : uid(),
+      parentId:   id,
+      fecha:      fecha,
+      tipo:       "ingreso",
+      propiedadId:pid,
+      categoria:  "Comisión administrador",
+      monto:      montoComision,
+      moneda:     moneda,
+      descripcion:"Comisión " + (prop.comisionPct||"") + "% — " + (desc||cat),
+      esComision: true,
+    };
+    if (comId) {
+      list = list.map(function(t){return t.id===comTx.id?comTx:t;});
+    } else {
+      list = list.concat([comTx]);
+    }
+  } else if (isG && tipo==="ingreso" && montoComision === 0) {
+    // Remove any linked commission if user cleared it
+    list = list.filter(function(t){return t.parentId!==id;});
+  }
+
+  await save(Object.assign({},DATA,{transacciones:list}));
+  closeModal();
 };
-window.delTx = async function(id) { if(!confirm("¿Eliminar?"))return; await save(Object.assign({},DATA,{transacciones:DATA.transacciones.filter(function(t){return t.id!==id;})})); };
+window.delTx = async function(id) {
+  if(!confirm("¿Eliminar?"))return;
+  // Also remove any linked commission transaction
+  await save(Object.assign({},DATA,{transacciones:DATA.transacciones.filter(function(t){return t.id!==id && t.parentId!==id;})}));
+};
 
 // ─── GESTORES ─────────────────────────────────────────────────────────────────
 function tabGestores() {
