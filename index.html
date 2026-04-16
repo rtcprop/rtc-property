@@ -372,12 +372,27 @@ function render() {
   // nav
   out += '<nav style="background:#fff;border-bottom:1px solid #E2D9CC;overflow-x:auto;"><div style="max-width:1280px;margin:0 auto;padding:0 16px;display:flex;">' + navHtml + '</div></nav>';
   // main
-  out += '<main style="max-width:1280px;margin:0 auto;padding:24px;" class="fi">' + bannerHtml + renderTab() + '</main>';
+  out += '<main style="max-width:1280px;margin:0 auto;padding:24px;" class="fi">' + bannerHtml + '<div id="tab-content">' + renderTab() + '</div></main>';
   out += '</div>';
   document.getElementById("root").innerHTML = out;
 }
 
 window.setTab = function(t) { TAB = t; render(); };
+
+// Render only the tab content without rebuilding the full shell
+function renderTabOnly() {
+  var el = document.getElementById("tab-content");
+  if (el) el.innerHTML = renderTab();
+}
+
+// Filtros de movimientos — no re-renderizan toda la página
+window.setTxFiltProp  = function(v) { _txFilt.prop = v;  renderTabOnly(); };
+window.setTxFiltTipo  = function(v) { _txFilt.tipo = v;  renderTabOnly(); };
+window.setTxFiltMes   = function(v) { _txFilt.mes  = v;  renderTabOnly(); };
+window.setTxFiltQ     = function(v) { _txFilt.q    = v;  renderTabOnly(); };
+window.setTxVista     = function(v) { _txVista = v;      renderTabOnly(); };
+window.toggleConv     = function()  { _showConv = !_showConv; renderTabOnly(); };
+window.closeConv      = function()  { _showConv = false;      renderTabOnly(); };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TABS
@@ -400,47 +415,124 @@ function tabDashboard() {
   var txM      = DATA.transacciones.filter(function(t){return t.fecha&&t.fecha.startsWith(mes);});
   var propias  = DATA.propiedades.filter(function(p){return p.ownership==="propia";});
   var gestidas = DATA.propiedades.filter(function(p){return p.ownership==="gestionada";});
-  var totI     = sum(txM,"ingreso"), totE = sum(txM,"egreso");
-  var propTx   = txM.filter(function(t){return propias.some(function(p){return p.id===t.propiedadId;});});
-  var propI    = sum(propTx,"ingreso"), propE = sum(propTx,"egreso");
-  var comis    = sum(txM.filter(function(t){return t.esComision;}), "ingreso");
 
-  function kpi(label, val, sub, color) {
+  // Ingresos propias = alquileres + ingresos de propiedades propias
+  var txPropias = txM.filter(function(t){return propias.some(function(p){return p.id===t.propiedadId;});});
+  // Comisiones = movimientos marcados esComision (de propiedades gestionadas)
+  var txComis   = txM.filter(function(t){return t.esComision;});
+  // Egresos totales
+  var totE      = sum(txM, "egreso");
+
+  // Por moneda — ingresos propias
+  var MONS = ["ARS","USD","BRL"];
+  function ingPorMoneda(txArr, moneda) { return sum(txArr.filter(function(t){return (t.moneda||"ARS")===moneda && t.tipo==="ingreso";}), "ingreso"); }
+  function egPorMoneda(txArr, moneda)  { return sum(txArr.filter(function(t){return (t.moneda||"ARS")===moneda && t.tipo==="egreso";}),  "egreso"); }
+
+  // Tasas de cambio para combinar en ARS
+  var blueRate  = RATES && RATES.blue    && RATES.blue.venta    || 0;
+  var brlRate   = RATES && RATES.brl     && RATES.brl.venta     || 0;
+  function toARS(monto, moneda) {
+    if (moneda==="ARS") return monto;
+    if (moneda==="USD") return blueRate ? monto * blueRate : 0;
+    if (moneda==="BRL") return brlRate  ? monto * brlRate  : 0;
+    return 0;
+  }
+
+  // Ingresos propias por moneda
+  var propIngARS = ingPorMoneda(txPropias, "ARS");
+  var propIngUSD = ingPorMoneda(txPropias, "USD");
+  var propIngBRL = ingPorMoneda(txPropias, "BRL");
+  var propIngTotal = propIngARS + toARS(propIngUSD,"USD") + toARS(propIngBRL,"BRL");
+
+  // Comisiones por moneda
+  var comARS = ingPorMoneda(txComis, "ARS");
+  var comUSD = ingPorMoneda(txComis, "USD");
+  var comBRL = ingPorMoneda(txComis, "BRL");
+  var comTotal = comARS + toARS(comUSD,"USD") + toARS(comBRL,"BRL");
+
+  // Ingresos totales (propias + comisiones)
+  var ingTotalCombinado = propIngTotal + comTotal;
+
+  // Egresos por moneda
+  var egARS = egPorMoneda(txM, "ARS");
+  var egUSD = egPorMoneda(txM, "USD");
+  var egBRL = egPorMoneda(txM, "BRL");
+  var egTotal = egARS + toARS(egUSD,"USD") + toARS(egBRL,"BRL");
+
+  function kpi(label, mainVal, lines, color, wide) {
     color = color || "#B8922A";
-    var out = '<div style="background:#fff;border:1px solid #E2D9CC;border-radius:12px;padding:18px 20px;">';
+    var out = '<div style="background:#fff;border:1px solid #E2D9CC;border-radius:12px;padding:18px 20px;'+(wide?"grid-column:span 2;":"")+'">';
     out += '<div style="color:#9A8E7A;font-size:10px;text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px;">' + esc(label) + '</div>';
-    out += '<div style="font-family:\'Cormorant Garamond\',serif;font-size:24px;font-weight:600;color:' + color + ';line-height:1;">' + esc(String(val)) + '</div>';
-    if (sub) out += '<div style="color:#9A8E7A;font-size:11px;margin-top:5px;">' + esc(sub) + '</div>';
+    out += '<div style="font-family:\'Cormorant Garamond\',serif;font-size:24px;font-weight:600;color:' + color + ';line-height:1;">' + esc(String(mainVal)) + '</div>';
+    if (lines && lines.length) {
+      out += '<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">';
+      lines.forEach(function(l){ out += '<span style="font-size:11px;color:#9A8E7A;background:#F2EDE4;border-radius:6px;padding:2px 7px;">'+esc(l)+'</span>'; });
+      out += '</div>';
+    }
     out += '</div>';
     return out;
   }
 
   var out = secHdr(new Date().toLocaleDateString("es-AR",{month:"long",year:"numeric"}) + " — Dashboard");
 
-  // rates panel
+  // Rates panel
   if (RATES) {
-    var fR = function(n){return n?"$"+Math.round(n).toLocaleString("es-AR"):"—";};
     out += card(
       '<div style="padding:16px 20px;"><div style="font-family:\'Cormorant Garamond\',serif;font-size:15px;font-weight:600;margin-bottom:12px;">Cotizaciones del día</div>'
       + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">'
-      + buildRateBox("💵 USD Blue", RATES.blue, "#B8922A")
+      + buildRateBox("💵 USD Blue",    RATES.blue,    "#B8922A")
       + buildRateBox("🏦 USD Oficial", RATES.oficial, "#5A5040")
-      + buildRateBox("🇧🇷 Real BRL", RATES.brl, "#2D5A8E")
+      + buildRateBox("🇧🇷 Real BRL",  RATES.brl,     "#2D5A8E")
       + '</div></div>',
       "margin-bottom:20px;"
     );
   }
 
-  out += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:12px;margin-bottom:20px;">';
-  out += kpi("Ingresos totales mes",   fmtM(totI),       "",                                "#2D7A4F");
-  out += kpi("Egresos totales mes",    fmtM(totE),       "",                                "#B84040");
-  out += kpi("Neto props. propias",    fmtM(propI-propE),"Ing "+fmtM(propI)+" · Eg "+fmtM(propE), propI-propE>=0?"#2D7A4F":"#B84040");
-  out += kpi("Comisiones gestión",     fmtM(comis),      "",                                "#6040A0");
-  out += kpi("Props. propias",         propias.length,   DATA.contratos.filter(function(c){return c.vigente&&propias.some(function(p){return p.id===c.propiedadId;});}).length+" alquiladas");
-  out += kpi("Props. gestionadas",     gestidas.length,  DATA.clientes.length+" clientes");
+  // KPIs principales
+  var ingPropLines = [];
+  if (propIngARS) ingPropLines.push("$ " + propIngARS.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (propIngUSD) ingPropLines.push("USD " + propIngUSD.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (propIngBRL) ingPropLines.push("R$ " + propIngBRL.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (RATES && (propIngUSD||propIngBRL)) ingPropLines.push("≈ $" + Math.round(propIngTotal).toLocaleString("es-AR") + " ARS total");
+
+  var comLines = [];
+  if (comARS) comLines.push("$ " + comARS.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (comUSD) comLines.push("USD " + comUSD.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (comBRL) comLines.push("R$ " + comBRL.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (RATES && (comUSD||comBRL)) comLines.push("≈ $" + Math.round(comTotal).toLocaleString("es-AR") + " ARS total");
+
+  var egLines = [];
+  if (egARS) egLines.push("$ " + egARS.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (egUSD) egLines.push("USD " + egUSD.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (egBRL) egLines.push("R$ " + egBRL.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (RATES && (egUSD||egBRL)) egLines.push("≈ $" + Math.round(egTotal).toLocaleString("es-AR") + " ARS total");
+
+  var neto = ingTotalCombinado - egTotal;
+  var noRates = !RATES && (propIngUSD||propIngBRL||comUSD||comBRL||egUSD||egBRL);
+
+  out += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:12px;">';
+  out += kpi("Ingresos props. propias",
+    RATES ? "≈ $"+Math.round(propIngTotal).toLocaleString("es-AR") : fmtM(propIngARS),
+    ingPropLines.length ? ingPropLines : null, "#2D7A4F");
+  out += kpi("Comisiones gestión mes",
+    RATES ? "≈ $"+Math.round(comTotal).toLocaleString("es-AR") : fmtM(comARS),
+    comLines.length ? comLines : null, "#6040A0");
+  out += kpi("Egresos totales mes",
+    RATES ? "≈ $"+Math.round(egTotal).toLocaleString("es-AR") : fmtM(egARS),
+    egLines.length ? egLines : null, "#B84040");
+  out += kpi("Neto total mes (ingresos − egresos)",
+    RATES ? "≈ $"+Math.round(neto).toLocaleString("es-AR") : "—",
+    RATES ? ["Propias + comisiones vs egresos"] : ["Cargá cotizaciones para ver el combinado"],
+    neto >= 0 ? "#2D7A4F" : "#B84040");
+  out += kpi("Props. propias",   propias.length,  [DATA.contratos.filter(function(c){return c.vigente&&propias.some(function(p){return p.id===c.propiedadId;});}).length+" alquiladas"]);
+  out += kpi("Props. gestionadas", gestidas.length, [DATA.clientes.length+" clientes", gestidas.length+" propiedades"]);
   out += '</div>';
 
-  // summary table
+  if (noRates) {
+    out += '<div style="background:#FDF3E0;border:1px solid rgba(160,96,16,.2);border-radius:8px;padding:10px 16px;font-size:12px;color:#A06010;margin-bottom:16px;">⚠ Hay movimientos en USD o BRL. <button onclick="refreshRates()" style="background:none;border:none;cursor:pointer;color:#B8922A;font-weight:500;text-decoration:underline;font-size:12px;">Cargar cotizaciones</button> para ver los totales combinados en ARS.</div>';
+  }
+
+  // Summary table per property
   var porProp = DATA.propiedades.map(function(p) {
     var tx  = DATA.transacciones.filter(function(t){return t.propiedadId===p.id && t.fecha&&t.fecha.startsWith(mes);});
     var ing = sum(tx,"ingreso"), eg = sum(tx,"egreso");
@@ -448,26 +540,31 @@ function tabDashboard() {
     var cont= DATA.contratos.find(function(c){return c.propiedadId===p.id&&c.vigente;});
     var inq = cont ? DATA.inquilinos.find(function(i){return i.id===cont.inquilinoId;}) : null;
     var cli = DATA.clientes.find(function(c){return c.id===p.clienteId;});
-    return {p:p, ing:ing, eg:eg, n:ing-eg, com:com, inq:inq, cli:cli};
+    // figure out currency label from most recent tx
+    var monedas = [...new Set(tx.map(function(t){return t.moneda||"ARS";}))];
+    return {p:p, ing:ing, eg:eg, n:ing-eg, com:com, inq:inq, cli:cli, monedas:monedas, tx:tx};
   });
 
   if (porProp.length) {
     var xH = ["Propiedad","Ciudad","Titularidad","Cliente/Dueño","Inquilino","Ingresos","Egresos","Neto/Comisión"];
     var xR = porProp.map(function(x){
-      return [x.p.nombre, x.p.ciudad, x.p.ownership==="propia"?"Propia":"Gestionada", x.cli&&x.cli.nombre||"—", x.inq&&x.inq.nombre||"—", fmtM(x.ing), fmtM(x.eg), x.p.ownership==="gestionada"?fmtM(x.com):fmtM(x.n)];
+      // use currency of first tx if available
+      var cur = x.tx.length ? (x.tx[0].moneda||"ARS") : "ARS";
+      return [x.p.nombre, x.p.ciudad, x.p.ownership==="propia"?"Propia":"Gestionada", x.cli&&x.cli.nombre||"—", x.inq&&x.inq.nombre||"—", fmtM(x.ing,cur), fmtM(x.eg,cur), x.p.ownership==="gestionada"?fmtM(x.com,cur):fmtM(x.n,cur)];
     });
     var tbody = "";
     porProp.forEach(function(x) {
       var netColor = x.p.ownership==="gestionada" ? "#6040A0" : (x.n>=0?"#2D7A4F":"#B84040");
+      var cur = x.tx.length ? (x.tx[0].moneda||"ARS") : "ARS";
       tbody += '<tr class="hr">';
       tbody += '<td style="' + tdSt() + 'font-weight:500;">' + esc(x.p.nombre) + '</td>';
       tbody += '<td style="' + tdSt() + 'color:#9A8E7A;">' + esc(x.p.ciudad) + '</td>';
       tbody += '<td style="' + tdSt() + '">' + badge(x.p.ownership==="propia"?"🏠 Propia":"🏢 Gestionada", x.p.ownership==="propia"?"gold":"purple") + '</td>';
       tbody += '<td style="' + tdSt() + 'color:#5A5040;">' + esc(x.cli&&x.cli.nombre||"—") + '</td>';
       tbody += '<td style="' + tdSt() + 'color:#5A5040;">' + esc(x.inq&&x.inq.nombre||"—") + '</td>';
-      tbody += '<td style="' + tdSt() + 'color:#2D7A4F;font-weight:500;">' + (x.ing?fmtM(x.ing):"—") + '</td>';
-      tbody += '<td style="' + tdSt() + 'color:#B84040;font-weight:500;">' + (x.eg?fmtM(x.eg):"—") + '</td>';
-      tbody += '<td style="' + tdSt() + 'font-weight:600;color:' + netColor + ';">' + (x.p.ownership==="gestionada"?fmtM(x.com):fmtM(x.n)) + '</td>';
+      tbody += '<td style="' + tdSt() + 'color:#2D7A4F;font-weight:500;">' + (x.ing?fmtM(x.ing,cur):"—") + '</td>';
+      tbody += '<td style="' + tdSt() + 'color:#B84040;font-weight:500;">' + (x.eg?fmtM(x.eg,cur):"—") + '</td>';
+      tbody += '<td style="' + tdSt() + 'font-weight:600;color:' + netColor + ';">' + (x.p.ownership==="gestionada"?fmtM(x.com,cur):fmtM(x.n,cur)) + '</td>';
       tbody += '</tr>';
     });
     var thead = "<thead><tr style='background:#F2EDE4;'>";
@@ -864,25 +961,29 @@ function tabMovimientos() {
   out += '<p style="color:#9A8E7A;font-size:12px;margin-top:2px;">'+DATA.transacciones.length+' registros totales</p></div>';
   out += '<div style="display:flex;gap:8px;flex-wrap:wrap;">';
   out += exportBar("Movimientos — Vista "+v, xH, xR, "movimientos_"+v);
-  out += '<button onclick="_showConv=!_showConv;setTab(\'movimientos\')" style="background:transparent;color:#5A5040;border:1px solid #E2D9CC;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;">⇄ Conversor</button>';
+  out += '<button onclick="toggleConv()" style="background:transparent;color:#5A5040;border:1px solid #E2D9CC;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;">⇄ Conversor</button>';
   out += ' ' + btnPrimary("+ Agregar","openTxForm(null)");
   out += '</div></div>';
 
   // Conversor
-  if (_showConv && RATES) {
+  if (_showConv) {
     out += '<div style="background:#FBF6EC;border:1px solid rgba(200,169,110,.35);border-radius:12px;padding:16px 18px;margin-bottom:14px;">';
     out += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">';
     out += '<span style="font-family:\'Cormorant Garamond\',serif;font-size:15px;font-weight:600;">Conversor de monedas</span>';
-    out += '<button onclick="_showConv=false;setTab(\'movimientos\')" style="background:none;border:none;cursor:pointer;">✕</button>';
+    out += '<button onclick="closeConv()" style="background:none;border:none;cursor:pointer;color:#9A8E7A;font-size:18px;">✕</button>';
     out += '</div>';
-    out += '<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">';
-    out += '<div><label style="'+LST+'">Monto</label><input id="cv-amt" type="number" style="'+IST+'width:120px;" value="1000" oninput="updateConv()"/></div>';
-    out += '<div><label style="'+LST+'">De</label><select id="cv-from" style="'+IST+'width:160px;" onchange="updateConv()"><option value="USD">USD Blue</option><option value="ARS">$ ARS</option><option value="BRL">R$ BRL</option></select></div>';
-    out += '<span style="color:#B8922A;font-size:18px;padding-bottom:2px;">→</span>';
-    out += '<div><label style="'+LST+'">A</label><select id="cv-to" style="'+IST+'width:160px;" onchange="updateConv()"><option value="ARS">$ ARS</option><option value="USD">USD Blue</option><option value="BRL">R$ BRL</option></select></div>';
-    out += '<div id="cv-res" style="background:#fff;border:1px solid #E2D9CC;border-radius:8px;padding:9px 14px;"><span style="font-family:\'Cormorant Garamond\',serif;font-size:22px;font-weight:600;color:#B8922A;">—</span></div>';
-    out += '</div>';
-    out += '<div style="margin-top:8px;font-size:11px;color:#9A8E7A;">Blue: <strong style="color:#B8922A">$'+Math.round(RATES.blue&&RATES.blue.venta||0)+'</strong> &nbsp; Ofic: <strong>$'+Math.round(RATES.oficial&&RATES.oficial.venta||0)+'</strong> &nbsp; R$1=<strong style="color:#2D5A8E">$'+Math.round(RATES.brl&&RATES.brl.venta||0)+'</strong></div>';
+    if (!RATES) {
+      out += '<div style="font-size:12px;color:#A06010;">Las cotizaciones no están cargadas. <button onclick="refreshRates()" style="background:none;border:none;cursor:pointer;color:#B8922A;font-weight:500;text-decoration:underline;font-size:12px;">Cargar ahora</button></div>';
+    } else {
+      out += '<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">';
+      out += '<div><label style="'+LST+'">Monto</label><input id="cv-amt" type="number" style="'+IST+'width:120px;" value="1000" oninput="updateConv()"/></div>';
+      out += '<div><label style="'+LST+'">De</label><select id="cv-from" style="'+IST+'width:160px;" onchange="updateConv()"><option value="USD">USD Blue</option><option value="ARS">$ ARS</option><option value="BRL">R$ BRL</option></select></div>';
+      out += '<span style="color:#B8922A;font-size:18px;padding-bottom:2px;">→</span>';
+      out += '<div><label style="'+LST+'">A</label><select id="cv-to" style="'+IST+'width:160px;" onchange="updateConv()"><option value="ARS">$ ARS</option><option value="USD">USD Blue</option><option value="BRL">R$ BRL</option></select></div>';
+      out += '<div id="cv-res" style="background:#fff;border:1px solid #E2D9CC;border-radius:8px;padding:9px 14px;min-width:140px;"><span style="font-family:\'Cormorant Garamond\',serif;font-size:22px;font-weight:600;color:#B8922A;">—</span></div>';
+      out += '</div>';
+      out += '<div style="margin-top:8px;font-size:11px;color:#9A8E7A;">Blue: <strong style="color:#B8922A">$'+Math.round(RATES.blue&&RATES.blue.venta||0).toLocaleString("es-AR")+'</strong> &nbsp; Ofic: <strong>$'+Math.round(RATES.oficial&&RATES.oficial.venta||0).toLocaleString("es-AR")+'</strong> &nbsp; R$1=<strong style="color:#2D5A8E">$'+Math.round(RATES.brl&&RATES.brl.venta||0).toLocaleString("es-AR")+'</strong></div>';
+    }
     out += '</div>';
   }
 
@@ -891,7 +992,7 @@ function tabMovimientos() {
   out += '<div style="background:#F2EDE4;border-radius:8px;padding:3px;display:flex;gap:2px;">';
   [["propia","👁 Vista propia"],["completa","📊 Vista completa"]].forEach(function(pair) {
     var active = v===pair[0];
-    out += '<button onclick="_txVista=\''+pair[0]+'\';setTab(\'movimientos\')" style="background:'+(active?"#fff":"transparent")+';border:none;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;color:'+(active?"#B8922A":"#9A8E7A")+';font-weight:'+(active?500:400)+';">'+pair[1]+'</button>';
+    out += '<button onclick="setTxVista(\''+pair[0]+'\')" style="background:'+(active?"#fff":"transparent")+';border:none;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;color:'+(active?"#B8922A":"#9A8E7A")+';font-weight:'+(active?500:400)+';">'+pair[1]+'</button>';
   });
   out += '</div><span style="font-size:11px;color:'+(v==="propia"?"#9A8E7A":"#A06010")+'">'+(v==="propia"?"Propias + comisiones de gestionadas":"Flujo completo — incluye alquileres de clientes antes de transferir")+'</span></div>';
 
@@ -900,10 +1001,10 @@ function tabMovimientos() {
   out += card(
     '<div style="padding:12px 14px;border-bottom:1px solid #E2D9CC;">'
     + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">'
-    + '<select style="'+IST+'" onchange="_txFilt.prop=this.value;setTab(\'movimientos\')">'+propOpts+'</select>'
-    + '<select style="'+IST+'" onchange="_txFilt.tipo=this.value;setTab(\'movimientos\')"><option value="">Ingresos y egresos</option><option value="ingreso"'+(f.tipo==="ingreso"?" selected":"")+'>Ingresos</option><option value="egreso"'+(f.tipo==="egreso"?" selected":"")+'>Egresos</option></select>'
-    + '<input type="month" style="'+IST+'" value="'+esc(f.mes)+'" onchange="_txFilt.mes=this.value;setTab(\'movimientos\')"/>'
-    + '<input style="'+IST+'" placeholder="Buscar..." value="'+esc(f.q)+'" oninput="_txFilt.q=this.value;setTab(\'movimientos\')"/>'
+    + '<select style="'+IST+'" onchange="setTxFiltProp(this.value)">'+propOpts+'</select>'
+    + '<select style="'+IST+'" onchange="setTxFiltTipo(this.value)"><option value="">Ingresos y egresos</option><option value="ingreso"'+(f.tipo==="ingreso"?" selected":"")+'>Ingresos</option><option value="egreso"'+(f.tipo==="egreso"?" selected":"")+'>Egresos</option></select>'
+    + '<input type="month" style="'+IST+'" value="'+esc(f.mes)+'" onchange="setTxFiltMes(this.value)"/>'
+    + '<input id="tx-search" style="'+IST+'" placeholder="Buscar..." value="'+esc(f.q)+'" oninput="setTxFiltQ(this.value)"/>'
     + '</div></div>'
     + '<div style="padding:12px 14px;border-bottom:1px solid #E2D9CC;display:flex;gap:8px;flex-wrap:wrap;">'
     + '<span style="background:#EBF7F0;border:1px solid rgba(45,122,79,.15);border-radius:8px;padding:6px 14px;font-size:13px;color:#2D7A4F;font-weight:500;">↑ '+fmtM(ing)+'</span>'
