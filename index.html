@@ -418,9 +418,11 @@ function tabDashboard() {
 
   // Ingresos propias = alquileres + ingresos de propiedades propias
   var txPropias = txM.filter(function(t){return propias.some(function(p){return p.id===t.propiedadId;});});
-  // Comisiones = movimientos marcados esComision (de propiedades gestionadas)
+  // Nuestra comisión = movimientos marcados esComision:true (ingresos)
   var txComis   = txM.filter(function(t){return t.esComision;});
-  // Egresos totales
+  // Comisiones a gestores externos (egresos con tipoLinked="gestor")
+  var txGestor  = txM.filter(function(t){return t.tipoLinked==="gestor";});
+  // Egresos totales (incluye comisiones a gestores)
   var totE      = sum(txM, "egreso");
 
   // Por moneda — ingresos propias
@@ -501,6 +503,17 @@ function tabDashboard() {
   if (comBRL) comLines.push("R$ " + comBRL.toLocaleString("es-AR",{maximumFractionDigits:0}));
   if (RATES && (comUSD||comBRL)) comLines.push("≈ $" + Math.round(comTotal).toLocaleString("es-AR") + " ARS total");
 
+  // Comisiones pagadas a gestores externos (egresos tipoLinked="gestor")
+  var gestARS   = sum(txGestor.filter(function(t){return (t.moneda||"ARS")==="ARS";}), "egreso");
+  var gestUSD   = sum(txGestor.filter(function(t){return t.moneda==="USD";}),          "egreso");
+  var gestBRL   = sum(txGestor.filter(function(t){return t.moneda==="BRL";}),          "egreso");
+  var gestTotal = gestARS + toARS(gestUSD,"USD") + toARS(gestBRL,"BRL");
+  var gestLines = [];
+  if (gestARS) gestLines.push("$ " + gestARS.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (gestUSD) gestLines.push("USD " + gestUSD.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (gestBRL) gestLines.push("R$ " + gestBRL.toLocaleString("es-AR",{maximumFractionDigits:0}));
+  if (RATES && (gestUSD||gestBRL)) gestLines.push("\u2248 $" + Math.round(gestTotal).toLocaleString("es-AR") + " ARS total");
+
   var egLines = [];
   if (egARS) egLines.push("$ " + egARS.toLocaleString("es-AR",{maximumFractionDigits:0}));
   if (egUSD) egLines.push("USD " + egUSD.toLocaleString("es-AR",{maximumFractionDigits:0}));
@@ -514,9 +527,12 @@ function tabDashboard() {
   out += kpi("Ingresos props. propias",
     RATES ? "≈ $"+Math.round(propIngTotal).toLocaleString("es-AR") : fmtM(propIngARS),
     ingPropLines.length ? ingPropLines : null, "#2D7A4F");
-  out += kpi("Comisiones gestión mes",
+  out += kpi("Comisiones nuestras (gestión)",
     RATES ? "≈ $"+Math.round(comTotal).toLocaleString("es-AR") : fmtM(comARS),
     comLines.length ? comLines : null, "#6040A0");
+  out += kpi("Comisiones pagadas a gestores",
+    RATES ? (gestTotal?"≈ $"+Math.round(gestTotal).toLocaleString("es-AR"):"$0") : fmtM(gestARS),
+    gestLines.length ? gestLines : ["Sin comisiones a gestores este mes"], "#2D5A8E");
   out += kpi("Egresos totales mes",
     RATES ? "≈ $"+Math.round(egTotal).toLocaleString("es-AR") : fmtM(egARS),
     egLines.length ? egLines : null, "#B84040");
@@ -945,7 +961,8 @@ function tabMovimientos() {
   });
   var txV = v==="propia" ? txBase.filter(function(t){
     var p = DATA.propiedades.find(function(x){return x.id===t.propiedadId;});
-    return !p || p.ownership==="propia" || t.esComision;
+    // Show: own properties, our commissions, gestor egresos
+    return !p || p.ownership==="propia" || t.esComision || t.tipoLinked==="gestor";
   }) : txBase;
   var sorted = txV.slice().sort(function(a,b){return (b.fecha||"").localeCompare(a.fecha||"");});
   var ing = sum(sorted,"ingreso"), eg = sum(sorted,"egreso");
@@ -1024,9 +1041,8 @@ function buildTxTable(sorted) {
   thead += "</tr></thead>";
   var tbody = "";
 
-  // Filter: hide linked commission rows — they're shown inline under their parent
-  var parentIds = sorted.filter(function(t){return t.esComision && t.parentId;}).map(function(t){return t.parentId;});
-  var visible   = sorted.filter(function(t){return !t.parentId || !t.esComision;});
+  // Filter: hide all tipoLinked children — shown inline as badges on parent row
+  var visible = sorted.filter(function(t){return !t.tipoLinked;});
 
   visible.forEach(function(t) {
     var p    = DATA.propiedades.find(function(x){return x.id===t.propiedadId;});
@@ -1040,9 +1056,14 @@ function buildTxTable(sorted) {
     tbody += '<td style="'+tdSt()+'color:#9A8E7A;font-size:12px;">'+esc(t.categoria)+'</td>';
     tbody += '<td style="'+tdSt()+'font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">';
     tbody += esc(t.descripcion||"—");
-    // Show commission badge inline if this tx has a linked commission
+    // Show our commission badge inline
     if (com) {
-      tbody += ' <span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;color:#6040A0;background:#F0EAFA;padding:1px 6px;border-radius:4px;white-space:nowrap;">comisión '+fmtM(com.monto,com.moneda||"ARS")+'</span>';
+      tbody += ' <span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;color:#6040A0;background:#F0EAFA;padding:1px 6px;border-radius:4px;white-space:nowrap;">com. nuestra '+fmtM(com.monto,com.moneda||"ARS")+'</span>';
+    }
+    // Show gestor commission badge inline
+    var admLinked = DATA.transacciones.find(function(c){return c.parentId===t.id && c.tipoLinked==="gestor";});
+    if (admLinked) {
+      tbody += ' <span style="display:inline-flex;align-items:center;gap:3px;font-size:10px;color:#2D5A8E;background:#EAF0F8;padding:1px 6px;border-radius:4px;white-space:nowrap;">gestor \u2212'+fmtM(admLinked.monto,admLinked.moneda||"ARS")+'</span>';
     }
     tbody += '</td>';
     tbody += '<td style="'+tdSt()+'">'+badge(t.tipo==="ingreso"?"↑ Ingreso":"↓ Egreso",t.tipo==="ingreso"?"green":"red")+'</td>';
@@ -1089,16 +1110,62 @@ window.openTxForm = function(id, draftOverride) {
   var comCalc  = (tx.monto && comPct) ? Math.round(parseFloat(tx.monto) * comPct / 100) : "";
   var comVal   = (tx.montoComision !== undefined && tx.montoComision !== "") ? tx.montoComision : comCalc;
 
+  // Gestor externo vinculado a la propiedad
+  var adm        = prop && prop.adminId ? DATA.administradores.find(function(a){return a.id===prop.adminId;}) : null;
+  var admPct     = adm && adm.comision ? parseFloat(adm.comision) : 0;
+  var admCalc    = (tx.monto && admPct) ? Math.round(parseFloat(tx.monto) * admPct / 100) : "";
+  // stored values (editing) or auto-calc (new)
+  var admPctVal  = (tx.montoGestorPct  !== undefined && tx.montoGestorPct  !== "") ? tx.montoGestorPct  : (admPct||"");
+  var admMtoVal  = (tx.montoGestor     !== undefined && tx.montoGestor     !== "") ? tx.montoGestor     : admCalc;
+  var admFijoVal = (tx.montoGestorFijo !== undefined && tx.montoGestorFijo !== "") ? tx.montoGestorFijo : "";
+
   var gestBlock = "";
   if (isG && tx.tipo==="ingreso") {
-    var prevTxt = comVal ? "Tu comisi\u00f3n: " + fmtM(comVal, tx.moneda||"ARS") + " \u2014 se sumar\u00e1 a tus ingresos" : "Ingres\u00e1 el monto para calcular autom\u00e1ticamente";
-    gestBlock  = '<div style="grid-column:span 2;background:#F0EAFA;border:1px solid rgba(96,64,160,.25);border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;">';
-    gestBlock += '<div style="font-size:12px;color:#6040A0;font-weight:500;">&#127962; '+esc(prop.modoGestion==="cobrador"?"Cobrador":"Comisionista")+(comPct?' \u00b7 '+comPct+'% definido en la propiedad':'')+'</div>';
-    gestBlock += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">';
-    gestBlock += fld("Comisi\u00f3n (%)", '<input id="tx-compct" type="number" style="'+IST+'" value="'+esc(comPct||"")+'" oninput="recalcComision()" placeholder="Ej: 10"/>');
-    gestBlock += fld("Monto de mi comisi\u00f3n", '<input id="tx-comision" type="number" style="'+IST+'border-color:#9B72D0;background:#FDFAFF;" value="'+esc(comVal)+'" oninput="updateComPreview()" placeholder="Se calcula autom\u00e1tico"/>');
+    var monto    = parseFloat(tx.monto)||0;
+    var nuestaCom= parseFloat(comVal)||0;
+    var admMto   = parseFloat(admMtoVal)||0;
+    var admFijo  = parseFloat(admFijoVal)||0;
+    var totalAdm = admMto + admFijo;
+    var neto     = monto - nuestaCom - totalAdm;
+
+    // ── Bloque comisión nuestra (violeta) ──────────────────────────────────
+    gestBlock  = '<div style="grid-column:span 2;display:flex;flex-direction:column;gap:10px;">';
+
+    // Panel nuestra comisión
+    gestBlock += '<div style="background:#F0EAFA;border:1px solid rgba(96,64,160,.25);border-radius:10px;padding:14px 16px;">';
+    gestBlock += '<div style="font-size:11px;color:#6040A0;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;">Nuestra comisi\u00f3n</div>';
+    gestBlock += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">';
+    gestBlock += fld("Nuestra comisi\u00f3n (%)", '<input id="tx-compct" type="number" style="'+IST+'" value="'+esc(comPct||"")+'" oninput="recalcTodo()" placeholder="Ej: 10"/>');
+    gestBlock += fld("Monto de nuestra comisi\u00f3n", '<input id="tx-comision" type="number" style="'+IST+'border-color:#9B72D0;background:#FDFAFF;" value="'+esc(comVal)+'" oninput="recalcTodo()" placeholder="Se calcula autom\u00e1tico"/>');
+    gestBlock += '</div></div>';
+
+    // Panel comisión gestor externo (azul) — solo si la propiedad tiene gestor
+    gestBlock += '<div style="background:#EAF0F8;border:1px solid rgba(45,90,142,.25);border-radius:10px;padding:14px 16px;">';
+    gestBlock += '<div style="font-size:11px;color:#2D5A8E;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;">Comisi\u00f3n gestor externo</div>';
+    if (adm) {
+      gestBlock += '<div style="font-size:11px;color:#5A5040;margin-bottom:10px;">' + esc(adm.nombre) + (admPct?' \u00b7 '+admPct+'% definido en el gestor':'') + '</div>';
+    } else {
+      gestBlock += '<div style="font-size:11px;color:#9A8E7A;margin-bottom:10px;">Esta propiedad no tiene gestor externo asignado. Pod\u00e9s igual ingresar los montos.</div>';
+    }
+    gestBlock += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">';
+    gestBlock += fld("% del gestor", '<input id="tx-admpct" type="number" style="'+IST+'" value="'+esc(admPctVal)+'" oninput="recalcTodo()" placeholder="Ej: 5"/>');
+    gestBlock += fld("Comisi\u00f3n % calculada", '<input id="tx-admgestor" type="number" style="'+IST+'border-color:#5A8ABE;background:#F0F6FF;" value="'+esc(admMtoVal)+'" oninput="recalcTodo()" placeholder="Calculada autom\u00e1tico"/>');
+    gestBlock += fld("Comisi\u00f3n fija del gestor", '<input id="tx-admfijo" type="number" style="'+IST+'border-color:#5A8ABE;background:#F0F6FF;" value="'+esc(admFijoVal)+'" oninput="recalcTodo()" placeholder="Ej: 5000 fijo"/>');
+    gestBlock += fld("Total gestor (% + fijo)", '<div style="'+IST+'background:#F2EDE4;display:flex;align-items:center;" id="tx-admtotal">'+fmtM(totalAdm>0?totalAdm:"",tx.moneda||"ARS")+'</div>');
+    gestBlock += '</div></div>';
+
+    // Resumen neto
+    gestBlock += '<div id="tx-neto-preview" style="background:#fff;border:1px solid #E2D9CC;border-radius:8px;padding:10px 14px;font-size:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">';
+    if (monto > 0) {
+      gestBlock += '<span style="color:#1C1810;">Alquiler: <strong>'+fmtM(monto,tx.moneda||"ARS")+'</strong></span>';
+      if (nuestaCom)   gestBlock += '<span style="color:#6040A0;">\u2212 Nuestra com.: <strong>'+fmtM(nuestaCom,tx.moneda||"ARS")+'</strong></span>';
+      if (totalAdm)    gestBlock += '<span style="color:#2D5A8E;">\u2212 Gestor: <strong>'+fmtM(totalAdm,tx.moneda||"ARS")+'</strong></span>';
+      gestBlock += '<span style="color:'+(neto>=0?"#2D7A4F":"#B84040")+';font-weight:600;margin-left:auto;">Neto final: '+fmtM(neto,tx.moneda||"ARS")+'</span>';
+    } else {
+      gestBlock += '<span style="color:#9A8E7A;">Ingres\u00e1 el monto para ver el desglose</span>';
+    }
     gestBlock += '</div>';
-    gestBlock += '<div id="tx-com-preview" style="font-size:12px;color:#6040A0;background:#fff;border-radius:6px;padding:8px 12px;">'+prevTxt+'</div>';
+
     gestBlock += '</div>';
   }
 
@@ -1135,37 +1202,54 @@ window.reloadTxForm = function() {
   var desc   = document.getElementById("tx-desc")&&document.getElementById("tx-desc").value||"";
   var draft  = Object.assign({}, window._currentTxDraft||{}, {
     propiedadId:pid, monto:monto, moneda:moneda,
-    fecha:fecha, tipo:tipo, categoria:cat, descripcion:desc, montoComision:""
+    fecha:fecha, tipo:tipo, categoria:cat, descripcion:desc,
+    montoComision:"", montoGestor:"", montoGestorFijo:"", montoGestorPct:""
   });
   window._currentTxDraft = draft;
   openTxForm(window._currentTxId, draft);
 };
 
-// Live recalc when monto or % changes
-window.recalcComision = function() {
-  var monto  = parseFloat(document.getElementById("tx-m")&&document.getElementById("tx-m").value)||0;
-  var pct    = parseFloat(document.getElementById("tx-compct")&&document.getElementById("tx-compct").value)||0;
-  var moneda = document.getElementById("tx-mo")&&document.getElementById("tx-mo").value||"ARS";
-  var comEl  = document.getElementById("tx-comision");
-  var prevEl = document.getElementById("tx-com-preview");
-  if (!comEl) return;
-  if (monto && pct) {
-    var calc = Math.round(monto * pct / 100);
-    comEl.value = calc;
-    if (prevEl) prevEl.innerHTML = "Tu comisi\u00f3n: <strong>" + fmtM(calc, moneda) + "</strong> \u2014 se sumar\u00e1 a tus ingresos";
-  } else {
-    if (prevEl) prevEl.innerHTML = "Ingres\u00e1 el monto y el % para calcular";
+// Live recalc: updates nuestra comisión, comisión gestor, y neto preview
+window.recalcTodo = function() {
+  var g = function(id){ var el=document.getElementById(id); return el?el.value:""; };
+  var monto   = parseFloat(g("tx-m"))||0;
+  var moneda  = g("tx-mo")||"ARS";
+  // Nuestra comisión
+  var nPct    = parseFloat(g("tx-compct"))||0;
+  var comEl   = document.getElementById("tx-comision");
+  var nCom    = 0;
+  if (comEl) {
+    if (nPct && monto) { var nc = Math.round(monto * nPct / 100); comEl.value = nc; nCom = nc; }
+    else { nCom = parseFloat(comEl.value)||0; }
+  }
+  // Gestor %
+  var aPct    = parseFloat(g("tx-admpct"))||0;
+  var admEl   = document.getElementById("tx-admgestor");
+  var aMto    = 0;
+  if (admEl) {
+    if (aPct && monto) { var ac = Math.round(monto * aPct / 100); admEl.value = ac; aMto = ac; }
+    else { aMto = parseFloat(admEl.value)||0; }
+  }
+  // Gestor fijo
+  var aFijo   = parseFloat(g("tx-admfijo"))||0;
+  var totalAdm = aMto + aFijo;
+  // Update total gestor display
+  var totEl = document.getElementById("tx-admtotal");
+  if (totEl) totEl.textContent = totalAdm > 0 ? fmtM(totalAdm, moneda) : "—";
+  // Neto preview
+  var neto  = monto - nCom - totalAdm;
+  var prevEl = document.getElementById("tx-neto-preview");
+  if (prevEl && monto > 0) {
+    var html = '<span style="color:#1C1810;">Alquiler: <strong>'+fmtM(monto,moneda)+'</strong></span>';
+    if (nCom)     html += '<span style="color:#6040A0;">\u2212 Nuestra com.: <strong>'+fmtM(nCom,moneda)+'</strong></span>';
+    if (totalAdm) html += '<span style="color:#2D5A8E;">\u2212 Gestor: <strong>'+fmtM(totalAdm,moneda)+'</strong></span>';
+    html += '<span style="color:'+(neto>=0?"#2D7A4F":"#B84040")+';font-weight:600;margin-left:auto;">Neto final: '+fmtM(neto,moneda)+'</span>';
+    prevEl.innerHTML = html;
   }
 };
-
-window.updateComPreview = function() {
-  var comEl  = document.getElementById("tx-comision");
-  var prevEl = document.getElementById("tx-com-preview");
-  var moneda = document.getElementById("tx-mo")&&document.getElementById("tx-mo").value||"ARS";
-  if (!comEl || !prevEl) return;
-  var val = parseFloat(comEl.value)||0;
-  prevEl.innerHTML = val ? "Tu comisi\u00f3n: <strong>"+fmtM(val,moneda)+"</strong> \u2014 se sumar\u00e1 a tus ingresos" : "Sin comisi\u00f3n definida";
-};
+// Keep old name as alias for backward compat
+window.recalcComision = window.recalcTodo;
+window.updateComPreview = window.recalcTodo;
 
 window.saveTx = async function(id) {
   var m = parseFloat(document.getElementById("tx-m")&&document.getElementById("tx-m").value);
@@ -1176,52 +1260,74 @@ window.saveTx = async function(id) {
   var cat      = document.getElementById("tx-cat").value;
   var moneda   = document.getElementById("tx-mo").value;
   var desc     = document.getElementById("tx-desc").value;
-  var comEl    = document.getElementById("tx-comision");
-  var montoComision = comEl ? (parseFloat(comEl.value)||0) : 0;
-
-  // Main transaction (the full payment from the tenant)
-  var f = {id:id, fecha:fecha, tipo:tipo, propiedadId:pid,
-           categoria:cat, monto:m, moneda:moneda, descripcion:desc,
-           esComision:false, montoComision:montoComision};
+  var g = function(eid){ var el=document.getElementById(eid); return el?(parseFloat(el.value)||0):0; };
+  var montoComision  = g("tx-comision");
+  var montoGestorPct = g("tx-admpct");
+  var montoGestor    = g("tx-admgestor");
+  var montoGestorFijo= g("tx-admfijo");
+  var totalGestor    = montoGestor + montoGestorFijo;
 
   var prop = DATA.propiedades.find(function(p){return p.id===pid;});
   var isG  = prop && prop.ownership==="gestionada";
+
+  // Main transaction (full rent payment — stored for the record)
+  var f = {id:id, fecha:fecha, tipo:tipo, propiedadId:pid,
+           categoria:cat, monto:m, moneda:moneda, descripcion:desc,
+           esComision:false,
+           montoComision:montoComision,
+           montoGestor:montoGestor, montoGestorFijo:montoGestorFijo, montoGestorPct:montoGestorPct};
+
   var list = DATA.transacciones.some(function(x){return x.id===id;})
     ? DATA.transacciones.map(function(x){return x.id===id?f:x;})
     : DATA.transacciones.concat([f]);
 
-  // If gestionada with commission AND it's an income → save/update a linked commission transaction
-  if (isG && tipo==="ingreso" && montoComision > 0) {
-    // Look for existing linked commission (has parentId === id)
-    var comId  = DATA.transacciones.find(function(t){return t.parentId===id;});
-    var comTx  = {
-      id:         comId ? comId.id : uid(),
-      parentId:   id,
-      fecha:      fecha,
-      tipo:       "ingreso",
-      propiedadId:pid,
-      categoria:  "Comisión administrador",
-      monto:      montoComision,
-      moneda:     moneda,
-      descripcion:"Comisión " + (prop.comisionPct||"") + "% — " + (desc||cat),
-      esComision: true,
-    };
-    if (comId) {
-      list = list.map(function(t){return t.id===comTx.id?comTx:t;});
+  if (isG && tipo==="ingreso") {
+    // ── Nuestra comisión: linked ingreso with esComision=true ─────────────
+    var existingCom = DATA.transacciones.find(function(t){return t.parentId===id && t.esComision && t.tipoLinked==="nuestra";});
+    if (montoComision > 0) {
+      var comTx = {
+        id: existingCom ? existingCom.id : uid(),
+        parentId:id, tipoLinked:"nuestra",
+        fecha:fecha, tipo:"ingreso", propiedadId:pid,
+        categoria:"Comisión administrador",
+        monto:montoComision, moneda:moneda,
+        descripcion:"Nuestra comisión — " + (desc||cat),
+        esComision:true,
+      };
+      list = existingCom
+        ? list.map(function(t){return t.id===comTx.id?comTx:t;})
+        : list.concat([comTx]);
     } else {
-      list = list.concat([comTx]);
+      list = list.filter(function(t){return !(t.parentId===id && t.tipoLinked==="nuestra");});
     }
-  } else if (isG && tipo==="ingreso" && montoComision === 0) {
-    // Remove any linked commission if user cleared it
-    list = list.filter(function(t){return t.parentId!==id;});
+
+    // ── Comisión gestor externo: linked egreso ────────────────────────────
+    var existingAdm = DATA.transacciones.find(function(t){return t.parentId===id && t.tipoLinked==="gestor";});
+    var adm = prop.adminId ? DATA.administradores.find(function(a){return a.id===prop.adminId;}) : null;
+    if (totalGestor > 0) {
+      var admTx = {
+        id: existingAdm ? existingAdm.id : uid(),
+        parentId:id, tipoLinked:"gestor",
+        fecha:fecha, tipo:"egreso", propiedadId:pid,
+        categoria:"Comisión administrador",
+        monto:totalGestor, moneda:moneda,
+        descripcion:"Comisión gestor" + (adm?" "+adm.nombre:"") + " — " + (desc||cat),
+        esComision:false,
+      };
+      list = existingAdm
+        ? list.map(function(t){return t.id===admTx.id?admTx:t;})
+        : list.concat([admTx]);
+    } else {
+      list = list.filter(function(t){return !(t.parentId===id && t.tipoLinked==="gestor");});
+    }
   }
 
   await save(Object.assign({},DATA,{transacciones:list}));
   closeModal();
 };
 window.delTx = async function(id) {
-  if(!confirm("¿Eliminar?"))return;
-  // Also remove any linked commission transaction
+  if(!confirm("¿Eliminar movimiento? También se eliminarán las comisiones vinculadas."))return;
+  // Remove the tx and all its linked children (nuestra comisión + comisión gestor)
   await save(Object.assign({},DATA,{transacciones:DATA.transacciones.filter(function(t){return t.id!==id && t.parentId!==id;})}));
 };
 
